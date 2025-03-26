@@ -1,0 +1,74 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Poppins', sans-serif;
+}
+
+body, html {
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+
+input {
+    width: 300px;
+    padding: 12px;
+    border: none;
+    border-radius: 25px;
+    text-align: center;
+    font-size: 18px;
+    outline: none;
+    background: rgba(255, 255, 255, 0.9);
+    color: #333;
+    box-shadow: 0 5px 10px rgba(0, 0, 0, 0.2);
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+canvas {
+    flex: 1;
+    width: 100vw;
+    height: 100vh;
+    display: block;
+    background: white;
+    cursor: crosshair;
+    border: 2px solid rgba(255, 255, 255, 0.6);
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+}
+
+.buttons {
+    display: flex;
+    gap: 10px;
+    padding: 10px;
+    position: absolute;
+    bottom: 20px;
+}
+
+button {
+    padding: 12px 20px;
+    font-size: 16px;
+    border: none;
+    border-radius: 25px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: 0.3s;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+#undoBtn { background: #ff8a65; color: white; }
+#redoBtn { background: #4db6ac; color: white; }
+#clearBtn { background: #f44336; color: white; }
+
+button:hover {
+    transform: scale(1.1);
+    opacity: 0.9;
+}
