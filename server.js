@@ -1,10 +1,13 @@
 const express = require("express");
 const WebSocket = require("ws");
 const http = require("http");
+const url = require("url");
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+
+const wssMain = new WebSocket.Server({ noServer: true }); // Drawing + cursors
+const wssAudio = new WebSocket.Server({ noServer: true }); // Audio only
 
 let drawingHistory = [];
 let users = {};
@@ -13,8 +16,25 @@ let userRedoStacks = {};
 
 app.use(express.static("public"));
 
-wss.on("connection", (ws) => {
-    console.log("A new user connected");
+server.on("upgrade", (request, socket, head) => {
+    const pathname = url.parse(request.url).pathname;
+
+    if (pathname === "/audio") {
+        wssAudio.handleUpgrade(request, socket, head, (ws) => {
+            wssAudio.emit("connection", ws);
+        });
+    } else if (pathname === "/") {
+        wssMain.handleUpgrade(request, socket, head, (ws) => {
+            wssMain.emit("connection", ws, request);
+        });
+    } else {
+        socket.destroy(); // Close invalid connections
+    }
+});
+
+// --- Main WebSocket: Drawing, Cursors, etc.
+wssMain.on("connection", (ws) => {
+    console.log("New main (drawing) connection");
 
     ws.id = Math.random().toString(36).substr(2, 9);
     userUndoStacks[ws.id] = [];
@@ -23,84 +43,88 @@ wss.on("connection", (ws) => {
     ws.send(JSON.stringify({ type: "history", drawings: drawingHistory }));
     ws.send(JSON.stringify({ type: "cursorUpdate", users }));
 
+    broadcastMain({ type: "userJoined", usersCount: Object.keys(users).length });
+
     ws.on("message", (message) => {
         const data = JSON.parse(message);
 
-        if (data.type === "draw") {
-            if (!userUndoStacks[ws.id]) userUndoStacks[ws.id] = [];
-            userUndoStacks[ws.id].push(data);
-            drawingHistory.push(data);
-
-            wss.clients.forEach(client => {
-                if (client.readyState === WebSocket.OPEN) {
-                    client.send(JSON.stringify(data));
+        switch (data.type) {
+            case "draw":
+                userUndoStacks[ws.id].push(data);
+                drawingHistory.push(data);
+                broadcastMain(data);
+                break;
+            case "undo":
+                if (userUndoStacks[ws.id]?.length > 0) {
+                    const lastStroke = userUndoStacks[ws.id].pop();
+                    userRedoStacks[ws.id].push(lastStroke);
+                    drawingHistory = drawingHistory.filter(stroke => stroke !== lastStroke);
+                    broadcastMain({ type: "history", drawings: drawingHistory });
                 }
-            });
-        } else if (data.type === "undo") {
-            if (userUndoStacks[ws.id]?.length > 0) {
-                let lastStroke = userUndoStacks[ws.id].pop();
-                userRedoStacks[ws.id].push(lastStroke);
-                drawingHistory = drawingHistory.filter(stroke => stroke !== lastStroke);
-
-                wss.clients.forEach(client => {
-                    if (client.readyState === WebSocket.OPEN) {
-                        client.send(JSON.stringify({ type: "history", drawings: drawingHistory }));
-                    }
-                });
-            }
-        } else if (data.type === "redo") {
-            if (userRedoStacks[ws.id]?.length > 0) {
-                let redoStroke = userRedoStacks[ws.id].pop();
-                userUndoStacks[ws.id].push(redoStroke);
-                drawingHistory.push(redoStroke);
-
-                wss.clients.forEach(client => {
-                    if (client.readyState === WebSocket.OPEN) {
-                        client.send(JSON.stringify(redoStroke));
-                    }
-                });
-            }
-        } else if (data.type === "cursor") {
-            if (!users[ws.id]) {
-                users[ws.id] = { x: 0, y: 0, color: data.color, username: data.username };
-            }
-
-            users[ws.id].x = data.x;
-            users[ws.id].y = data.y;
-            users[ws.id].username = data.username;
-
-            wss.clients.forEach(client => {
-                if (client.readyState === WebSocket.OPEN) {
-                    client.send(JSON.stringify({ type: "cursorUpdate", users }));
+                break;
+            case "redo":
+                if (userRedoStacks[ws.id]?.length > 0) {
+                    const redoStroke = userRedoStacks[ws.id].pop();
+                    userUndoStacks[ws.id].push(redoStroke);
+                    drawingHistory.push(redoStroke);
+                    broadcastMain({ type: "history", drawings: drawingHistory });
                 }
-            });
-        } else if (data.type === "clear") {
-            drawingHistory = [];
-            userUndoStacks = {};
-            userRedoStacks = {};
-
-            wss.clients.forEach(client => {
-                if (client.readyState === WebSocket.OPEN) {
-                    client.send(JSON.stringify({ type: "clear" }));
-                }
-            });
+                break;
+            case "cursor":
+                users[ws.id] = {
+                    username: data.username,
+                    x: data.x,
+                    y: data.y,
+                    color: data.color,
+                };
+                broadcastMain({ type: "cursorUpdate", users });
+                break;
+            case "clear":
+                drawingHistory = [];
+                userUndoStacks = {};
+                userRedoStacks = {};
+                broadcastMain({ type: "clear" });
+                break;
         }
     });
 
     ws.on("close", () => {
-        console.log("A user disconnected");
+        console.log("Main socket disconnected");
         delete users[ws.id];
         delete userUndoStacks[ws.id];
         delete userRedoStacks[ws.id];
-
-        wss.clients.forEach(client => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({ type: "cursorUpdate", users }));
-            }
-        });
+        broadcastMain({ type: "cursorUpdate", users });
     });
 });
 
+// --- Audio WebSocket
+wssAudio.on("connection", (ws) => {
+    ws.id = Math.random().toString(36).substr(2, 9);
+    ws.send(JSON.stringify({ type: "id", id: ws.id }));
+
+    ws.on("message", (data, isBinary) => {
+        if (isBinary) {
+            // Broadcast to all others with metadata
+            wssAudio.clients.forEach(client => {
+                if (client !== ws && client.readyState === WebSocket.OPEN) {
+                    // Send sender ID as header before the raw audio
+                    const metadata = Buffer.from(JSON.stringify({ sender: ws.id }) + "\n");
+                    const combined = Buffer.concat([metadata, data]);
+                    client.send(combined);
+                }
+            });
+        }
+    });
+});
+
+function broadcastMain(message) {
+    wssMain.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(message));
+        }
+    });
+}
+
 server.listen(3000, () => {
-    console.log("Server running on http://192.168.18.103:3000");
+    console.log("Server running on http://localhost:3000");
 });
